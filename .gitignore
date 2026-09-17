@@ -34,3 +34,9 @@ _isaac_sim*
 _repo
 _build
 .lastformat
+.vscode/browse.vc.db-shm
+.vscode/browse.vc.db-wal
+.vscode/browse.vc.db.lock
+.vscode/browse.vc.db
+.vscode/settings.json
+.vscode/c_cpp_properties.json

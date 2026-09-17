@@ -77,6 +77,10 @@ class OnPolicyRunner:
         ).to(self.device)
 
         alg_class = eval(self.alg_cfg.pop("class_name"))
+        if (self.alg_cfg.get("action_bound_loss_coef", 0) > 0
+                and self.alg_cfg.get("action_mean_bounds") is None):
+            self.alg_cfg["action_mean_bounds"] = self.env.get_action_mean_bounds()
+            print(f"Executable action mean bounds: {self.alg_cfg['action_mean_bounds']}")
         self.alg = alg_class(
             self.env.num_envs,
             encoder,
@@ -166,8 +170,12 @@ class OnPolicyRunner:
             self.env.num_envs, dtype=torch.float, device=self.device
         )
 
-        tot_iter = self.current_learning_iteration + num_learning_iterations
-        for it in range(self.current_learning_iteration, tot_iter):
+        start_iteration = self.current_learning_iteration
+        start_total_time = self.tot_time
+        tot_iter = start_iteration + num_learning_iterations
+        task_state = getattr(getattr(self.env, "unwrapped", self.env), "task_state", None)
+        previous_level = getattr(task_state, "level", None)
+        for it in range(start_iteration, tot_iter):
             start = time.time()
             # Rollout
             with torch.inference_mode():
@@ -235,11 +243,20 @@ class OnPolicyRunner:
 
             if self.log_dir is not None:
                 self.log(locals())
-            if it % self.save_interval == 0:
-                self.save(os.path.join(self.log_dir, "model_{}.pt".format(it)))
+            self.current_learning_iteration = it + 1
+            current_level = getattr(task_state, "level", None)
+            promoted = current_level != previous_level
+            if self.current_learning_iteration % self.save_interval == 0 or promoted:
+                self.save(os.path.join(self.log_dir, "model_{}.pt".format(self.current_learning_iteration)))
+            if promoted and self.log_dir is not None:
+                import json
+                with open(os.path.join(self.log_dir, "promotions.jsonl"), "a") as output:
+                    output.write(json.dumps({"iteration": self.current_learning_iteration,
+                        "from_level": previous_level, "to_level": current_level,
+                        "checkpoint": f"model_{self.current_learning_iteration}.pt"}) + "\n")
+            previous_level = current_level
             ep_infos.clear()
 
-        self.current_learning_iteration += num_learning_iterations
         self.save(
             os.path.join(
                 self.log_dir, "model_{}.pt".format(self.current_learning_iteration)
@@ -283,6 +300,16 @@ class OnPolicyRunner:
         self.writer.add_scalar("Loss/learning_rate", self.alg.learning_rate, locs["it"])
         self.writer.add_scalar("Policy/mean_noise_std", mean_std.item(), locs["it"])
         self.writer.add_scalar("Policy/mean_kl", locs["mean_kl"], locs["it"])
+        if getattr(self.alg, "action_bound_loss_coef", 0) > 0:
+            self.writer.add_scalar("Loss/action_bounds", self.alg.mean_action_bound_loss, locs["it"])
+        task_state = getattr(getattr(self.env, "unwrapped", self.env), "task_state", None)
+        if task_state is not None and hasattr(task_state, "metric_windows"):
+            # One point per completed window, separated by difficulty. A new
+            # stage must never be plotted with the previous stage's success rate.
+            for metrics in task_state.metric_windows:
+                for key, value in metrics.items():
+                    self.writer.add_scalar(key, value, locs["it"])
+            task_state.metric_windows.clear()
         self.writer.add_scalar("Perf/total_fps", fps, locs["it"])
         self.writer.add_scalar(
             "Perf/collection time", locs["collection_time"], locs["it"]
@@ -311,7 +338,11 @@ class OnPolicyRunner:
                     self.tot_time,
                 )
 
-        str = f" \033[1m Learning iteration {locs['it']}/{self.current_learning_iteration + locs['num_learning_iterations']} \033[0m "
+        completed_iterations = locs["it"] - locs["start_iteration"] + 1
+        remaining_iterations = max(0, locs["tot_iter"] - locs["it"] - 1)
+        eta = ((self.tot_time - locs["start_total_time"]) / completed_iterations
+               * remaining_iterations)
+        str = f" \033[1m Learning iteration {locs['it'] + 1}/{locs['tot_iter']} \033[0m "
 
         if len(locs["rewbuffer"]) > 0:
             log_string = (
@@ -347,30 +378,43 @@ class OnPolicyRunner:
             f"""{'Total timesteps:':>{pad}} {self.tot_timesteps}\n"""
             f"""{'Iteration time:':>{pad}} {iteration_time:.2f}s\n"""
             f"""{'Total time:':>{pad}} {self.tot_time:.2f}s\n"""
-            f"""{'ETA:':>{pad}} {self.tot_time / (locs['it'] + 1) * (
-                               locs['num_learning_iterations'] - locs['it']):.1f}s\n"""
+            f"""{'ETA:':>{pad}} {eta:.1f}s\n"""
         )
         print(log_string)
 
     def save(self, path, infos=None):
+        task_state = getattr(getattr(self.env, "unwrapped", self.env), "task_state", None)
+        temporary_path = str(path) + ".tmp"
         torch.save(
             {
                 "model_state_dict": self.alg.actor_critic.state_dict(),
                 "encoder_state_dict": self.alg.encoder.state_dict(),
                 "optimizer_state_dict": self.alg.optimizer.state_dict(),
+                "encoder_optimizer_state_dict": (
+                    self.alg.extra_optimizer.state_dict() if self.alg.extra_optimizer is not None else None
+                ),
                 "iter": self.current_learning_iteration,
                 "infos": infos,
+                "task_state": task_state.state_dict() if task_state is not None else None,
             },
-            path,
+            temporary_path,
         )
+        os.replace(temporary_path, path)
 
-    def load(self, path, load_optimizer=False):
-        loaded_dict = torch.load(path)
+    def load(self, path, load_optimizer=False, load_task_state=False):
+        loaded_dict = torch.load(path, map_location=self.device)
         self.alg.actor_critic.load_state_dict(loaded_dict["model_state_dict"])
+        self.alg.clamp_action_std()
         self.alg.encoder.load_state_dict(loaded_dict["encoder_state_dict"])
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
+            self.alg.learning_rate = self.alg.optimizer.param_groups[0]["lr"]
+            if self.alg.extra_optimizer is not None and loaded_dict.get("encoder_optimizer_state_dict") is not None:
+                self.alg.extra_optimizer.load_state_dict(loaded_dict["encoder_optimizer_state_dict"])
         self.current_learning_iteration = loaded_dict["iter"]
+        task_state = getattr(getattr(self.env, "unwrapped", self.env), "task_state", None)
+        if load_task_state and task_state is not None and loaded_dict.get("task_state") is not None:
+            task_state.load_state_dict(loaded_dict["task_state"])
         return loaded_dict["infos"]
 
     def get_inference_policy(self, device=None):

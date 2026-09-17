@@ -21,6 +21,7 @@ parser.add_argument("--save_interval", type=int, default=None, help="The number 
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--checkpoint_path", type=str, default=None, help="Relative path to checkpoint file.")
+parser.add_argument("--reset_optimizer", action="store_true", help="Resume network weights with fresh optimizers.")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -59,10 +60,9 @@ from isaaclab.envs import (
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_pickle, dump_yaml
 from isaaclab_tasks.utils import get_checkpoint_path, parse_env_cfg
-from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 
 # Import extensions to set up environment tasks
-from bipedal_locomotion.utils.wrappers.rsl_rl import RslRlPpoAlgorithmMlpCfg
+from bipedal_locomotion.utils.wrappers.rsl_rl import RslRlPpoAlgorithmMlpCfg, RslRlVecEnvWrapper
 
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -78,6 +78,8 @@ def main():
         task_name=args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs
     )
     agent_cfg: RslRlPpoAlgorithmMlpCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
+    cli_args.configure_getup(env_cfg, args_cli)
+    env_cfg.seed = agent_cfg.seed
 
     if args_cli.max_iterations is not None:
         agent_cfg.max_iterations = args_cli.max_iterations
@@ -133,7 +135,12 @@ def main():
             resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
-        runner.load(resume_path)
+        runner.load(resume_path, load_optimizer=not args_cli.reset_optimizer,
+                    load_task_state=hasattr(env_cfg, "getup") and args_cli.getup_stage is None)
+        # Recreate episodes using the restored curriculum level, never stale root states.
+        if hasattr(env_cfg, "getup"):
+            env_cfg.getup.initial_level = env.unwrapped.task_state.level
+            env.reset()
 
     # set seed of the environment
     env.seed(agent_cfg.seed)
@@ -143,9 +150,14 @@ def main():
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
     dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
     dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
+    dump_yaml(os.path.join(log_dir, "params", "continuation.yaml"), {
+        "checkpoint_path": args_cli.checkpoint_path,
+        "reset_optimizer": args_cli.reset_optimizer,
+    })
 
     # run training
-    runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+    runner.learn(num_learning_iterations=agent_cfg.max_iterations,
+                 init_at_random_ep_len=not hasattr(env_cfg, "getup"))
 
     # close the simulator
     env.close()

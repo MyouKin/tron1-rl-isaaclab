@@ -31,6 +31,33 @@ def add_rsl_rl_args(parser: argparse.ArgumentParser):
     arg_group.add_argument(
         "--log_project_name", type=str, default=None, help="Name of the logging project when using wandb or neptune."
     )
+    arg_group.add_argument("--getup_stage", type=int, default=None,
+                           help="Initial GetUp level; valid range depends on the selected task.")
+    arg_group.add_argument("--getup_fixed_stage", action="store_true",
+                           help="Disable automatic GetUp curriculum and easier-pose replay.")
+    arg_group.add_argument("--getup_tilt_range", type=float, nargs=2, default=None, metavar=("MIN_DEG", "MAX_DEG"),
+                           help="Override the selected stage's tilt range in degrees (e.g. 15 25).")
+
+
+def configure_getup(env_cfg, args_cli):
+    """Apply explicit task overrides before creating the simulation."""
+    if not hasattr(env_cfg, "getup"):
+        if args_cli.getup_stage is not None or args_cli.getup_fixed_stage or args_cli.getup_tilt_range is not None:
+            raise ValueError("--getup_stage/--getup_fixed_stage require a GetUp task.")
+        return
+    if args_cli.getup_stage is not None:
+        if not 0 <= args_cli.getup_stage < len(env_cfg.getup.tilt_ranges_deg):
+            raise ValueError("GetUp stage is outside this task curriculum.")
+        env_cfg.getup.initial_level = args_cli.getup_stage
+    if args_cli.getup_fixed_stage:
+        env_cfg.getup.curriculum_enabled = False
+    if args_cli.getup_tilt_range is not None:
+        low, high = args_cli.getup_tilt_range
+        if not 0 <= low < high <= 180:
+            raise ValueError("GetUp tilt range must satisfy 0 <= min < max <= 180 degrees.")
+        ranges = list(env_cfg.getup.tilt_ranges_deg)
+        ranges[env_cfg.getup.initial_level] = (low, high)
+        env_cfg.getup.tilt_ranges_deg = tuple(ranges)
 
 
 def parse_rsl_rl_cfg(task_name: str, args_cli: argparse.Namespace) -> RslRlOnPolicyRunnerCfg:

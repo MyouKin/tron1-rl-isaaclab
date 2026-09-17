@@ -17,6 +17,10 @@ class RslRlPpoAlgorithmMlpCfg(RslRlPpoAlgorithmCfg):
     # runner_type: str = "OnPolicyRunner"
 
     obs_history_len: int = 1
+    min_action_std: float | None = None
+    max_action_std: float | None = None
+    action_bound_loss_coef: float = 0.0
+    action_mean_bounds: list | None = None
 
 
 @configclass

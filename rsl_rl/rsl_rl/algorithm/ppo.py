@@ -29,6 +29,7 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
 import torch
+import math
 import torch.nn as nn
 import torch.optim as optim
 
@@ -63,6 +64,10 @@ class PPO:
         early_stop=False,
         anneal_lr=False,
         device="cpu",
+        min_action_std=None,
+        max_action_std=None,
+        action_bound_loss_coef=0.0,
+        action_mean_bounds=None,
         **kwargs,
     ):
         self.device = device
@@ -80,6 +85,29 @@ class PPO:
 
         # PPO components
         self.actor_critic = actor_critic
+        self.action_bound_loss_coef = action_bound_loss_coef
+        self.action_mean_bounds = None
+        if action_bound_loss_coef < 0:
+            raise ValueError("action_bound_loss_coef must be nonnegative")
+        if action_bound_loss_coef > 0:
+            if action_mean_bounds is None:
+                raise ValueError("action_mean_bounds is required when the bound loss is enabled")
+            bounds = torch.as_tensor(action_mean_bounds, dtype=torch.float32, device=device)
+            if (bounds.ndim != 2 or bounds.shape[1] != 2
+                    or bounds.shape[0] != actor_critic.logstd.numel()
+                    or not bool(torch.isfinite(bounds).all())
+                    or not bool((bounds[:, 0] < bounds[:, 1]).all())):
+                raise ValueError("Provide one finite ordered mean bound per action")
+            self.action_mean_bounds = bounds
+        self.mean_action_bound_loss = 0.0
+        self.min_action_std = min_action_std
+        self.max_action_std = max_action_std
+        if min_action_std is not None and min_action_std <= 0:
+            raise ValueError("min_action_std must be positive")
+        if max_action_std is not None and (max_action_std <= 0 or
+                                          (min_action_std is not None and max_action_std < min_action_std)):
+            raise ValueError("Invalid action standard deviation bounds")
+        self.clamp_action_std()
         self.actor_critic.to(self.device)
         self.storage = None  # initialized later
         self.optimizer = optim.Adam([{"params": self.actor_critic.parameters()}], lr=learning_rate)
@@ -102,6 +130,22 @@ class PPO:
         self.lam = lam
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
+
+    def clamp_action_std(self):
+        if self.min_action_std is not None or self.max_action_std is not None:
+            with torch.no_grad():
+                self.actor_critic.logstd.clamp_(
+                    min=math.log(self.min_action_std) if self.min_action_std is not None else None,
+                    max=math.log(self.max_action_std) if self.max_action_std is not None else None,
+                )
+
+    def action_bound_loss(self, mean):
+        """Direct actor gradient outside executable targets; no action remapping."""
+        if self.action_mean_bounds is None:
+            return mean.new_zeros(())
+        low, high = self.action_mean_bounds.unbind(dim=1)
+        return ((low - mean).clamp_min(0).square()
+                + (mean - high).clamp_min(0).square()).mean()
 
     def init_storage(
         self,
@@ -179,6 +223,7 @@ class PPO:
 
     def update(self):
         num_updates = 0
+        action_bound_loss_sum = 0.0
         mean_value_loss = 0
         mean_surrogate_loss = 0
         mean_kl = 0
@@ -271,10 +316,13 @@ class PPO:
                 value_loss = (returns_batch - value_batch).pow(2).mean()
 
             entropy_batch_mean = entropy_batch.mean()
+            bound_loss = self.action_bound_loss(mu_batch)
+            action_bound_loss_sum += bound_loss.detach().item()
             loss = (
                 surrogate_loss
                 + self.value_loss_coef * value_loss
                 - self.entropy_coef * entropy_batch_mean
+                + self.action_bound_loss_coef * bound_loss
             )
 
             if self.anneal_lr:
@@ -288,6 +336,7 @@ class PPO:
             loss.backward()
             nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
             self.optimizer.step()
+            self.clamp_action_std()
 
             num_updates += 1
             mean_value_loss += value_loss.item()
@@ -329,5 +378,6 @@ class PPO:
         mean_surrogate_loss /= num_updates
         mean_kl /= num_updates
         self.storage.clear()
+        self.mean_action_bound_loss = action_bound_loss_sum / max(num_updates, 1)
 
         return (mean_value_loss, mean_extra_loss, mean_surrogate_loss, mean_kl)
