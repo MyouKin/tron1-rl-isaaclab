@@ -41,3 +41,8 @@ class WF_TRON1AGetUpBoundedPPORunnerCfg(WF_TRON1AGetUpAutoPPORunnerCfg):
         super().__post_init__()
         self.algorithm.action_bound_loss_coef = 0.005
         # Filled by the runner from actual action scale/offset/clip and joint order.
+
+
+@configclass
+class WF_TRON1AFallenPPORunnerCfg(WF_TRON1AGetUpBoundedPPORunnerCfg):
+    experiment_name = 'wf_tron_1a_fallen'

@@ -52,6 +52,8 @@ Use `Isaac-Limx-WF-GetUp-Bounded-v0` for training and `Isaac-Limx-WF-GetUp-Bound
 
 See [Recovery commands in the Chinese README](README_cn.md#翻倒起身recovery) for resume and recording commands. `manage_getup.py start/status/stop` controls automatic training and evaluation; records are kept in `logs/getup_continuous/`.
 
+The Fallen extension adds passive random-joint pose generation, a disjoint train/test bank in `data/recovery/fallen_v1.pt`, and `Isaac-Limx-WF-Recovery-Fallen-v0` / `Isaac-Limx-WF-Recovery-Fallen-Play-v0`. Scripts under `scripts/recovery/` generate/evaluate poses and run background training. `check_recovery.py` checks the bank and live progress; `manage_recovery.py start/status/stop` manages the controller. See the Chinese README for commands. Generated pose banks are ignored by Git and must be retained separately from disposable logs.
+
 ## Robot Morphologies
 
 | Morphology | End-effector | Task ID Prefix |

@@ -48,7 +48,7 @@ python scripts/rsl_rl/train.py --task Isaac-Limx-WF-Blind-Flat-v0 --num_envs 409
 
 代码位于 `exts/bipedal_locomotion/bipedal_locomotion/tasks/recovery/`，与 `locomotion` 平级，包含环境配置、`mdp/` 和 `agents/`。复用 WF 机器人与基础配置；旧任务 ID、checkpoint 和 RSL-RL 兼容修复保留。腿关节使用有限角度及物理限位，轮子可连续转动。
 
-当前 `model_21000.pt` 已通过 33 阶段仿真评估（99.91%，16,896 回合）；尚未覆盖任意倒地关节姿态。迁移后已验证训练、旧模型推理和无窗口录制，GUI 问题尚未解决。
+当前 `model_21000.pt` 已通过原任务 33 阶段仿真评估（99.91%，16,896 回合）。随机关节姿态使用下面的 Fallen 扩展独立评估与续训。迁移后已验证训练、旧模型推理和无窗口录制，GUI 问题尚未解决。
 
 在仓库根目录执行（以下为本机路径）：
 
@@ -71,6 +71,30 @@ CHECKPOINT="$PWD/logs/rsl_rl/wf_tron_1a_getup_bounded/2026-09-17_12-43-05_contin
 ```
 
 视频写入 checkpoint 同级的 `videos/play/`，重复录制前需保留已有同名文件。独立评估使用 `scripts/rsl_rl/evaluate_getup.py`（参数见 `--help`）。自动训练入口为 `manage_getup.py start/status/stop`：每 2000 次更新评估，自动晋级和记录；已有状态目录会恢复原进度，达标后自动停止。评估记录位于 `logs/getup_continuous/`。
+
+### 随机关节倒地（Fallen）
+
+`recovery/fallen_pose_env_cfg.py` 定义被动姿态生成环境及新任务 `Isaac-Limx-WF-Recovery-Fallen-v0`（播放加 `-Play`）。生成时关闭腿的位置驱动，随机合法关节和身体朝向，自然落稳后记录状态；训练时恢复正常执行器，从姿态库 reset。数据文件位于 `data/recovery/fallen_v1.pt`，请与日志分开保留。
+
+训练集 4,096 个、测试集 1,536 个状态独立生成并检查重复。按实际关节偏离默认姿态的程度分三档自动晋级，混合 30% 原任务姿态；这三档是关节姿态难度，不是原来的身体倾角阶段。每 2,000 次更新评估完整测试集及原任务，退化暂停，连续两次达标停止。测试集用于开发验收，不代表任意姿态或实机都已覆盖。
+
+```bash
+# 生成新姿态库（已有文件时拒绝覆盖）
+"$SIM_PY" scripts/recovery/generate_fallen_poses.py --headless \
+  --train_poses 4096 --test_poses 1536 --seed 20260920 --output data/recovery/fallen_v1.pt
+
+# 首次启动后台训练；已有状态则恢复，重复启动不会另开进程
+"$SIM_PY" scripts/recovery/manage_recovery.py start \
+  --checkpoint "$CHECKPOINT" --pose_bank data/recovery/fallen_v1.pt \
+  --num_envs 4096 --chunk_iterations 2000 --iterations 6000
+
+# 检查数据完整性、实时迭代和最近评估
+"$SIM_PY" scripts/recovery/check_recovery.py
+# 在当前训练/评估段结束后暂停
+"$SIM_PY" scripts/recovery/manage_recovery.py stop
+```
+
+控制器记录在 `logs/recovery_fallen/continuous/`，新 checkpoint 在 `logs/rsl_rl/wf_tron_1a_fallen/`。旧模型全测试集评估可用 `scripts/recovery/evaluate_fallen_poses.py --checkpoint "$CHECKPOINT" --pose_bank data/recovery/fallen_v1.pt --output logs/recovery_fallen/evaluation.json --headless`（用 `$SIM_PY` 运行）。播放新任务沿用 `play.py`，传入新 task ID、`--pose_bank data/recovery/fallen_v1.pt` 和所需 checkpoint。
 
 ## 机器人形态
 

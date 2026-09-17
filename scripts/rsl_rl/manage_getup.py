@@ -44,11 +44,12 @@ def status(directory):
     return active
 
 
-def main():
+def main(controller_path=None, default_output=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['start', 'status', 'stop'])
-    parser.add_argument('--output', type=Path, default=ROOT / 'logs/getup_continuous')
+    parser.add_argument('--output', type=Path, default=default_output or ROOT / 'logs/getup_continuous')
     parser.add_argument('--checkpoint', type=Path)
+    parser.add_argument('--pose_bank', type=Path)
     parser.add_argument('--iterations', type=int, default=100000)
     parser.add_argument('--chunk_iterations', type=int, default=2000)
     parser.add_argument('--num_envs', type=int, default=4096)
@@ -69,11 +70,13 @@ def main():
         if not (output / 'state.json').exists() and args.checkpoint is None:
             parser.error('--checkpoint is required for a new output directory')
         (output / 'STOP').unlink(missing_ok=True)
-        command = [str(args.python), str(ROOT / 'scripts/rsl_rl/continuous_getup.py'),
+        command = [str(args.python), str(controller_path or ROOT / 'scripts/rsl_rl/continuous_getup.py'),
                    '--output', str(output), '--iterations', str(args.iterations),
                    '--chunk_iterations', str(args.chunk_iterations), '--num_envs', str(args.num_envs)]
         if args.checkpoint is not None:
             command += ['--checkpoint', str(args.checkpoint.resolve())]
+        if args.pose_bank is not None:
+            command += ['--pose_bank', str(args.pose_bank.resolve())]
         with (output / 'console.log').open('a') as log:
             child = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.DEVNULL,
                                      stdout=log, stderr=subprocess.STDOUT, start_new_session=True)

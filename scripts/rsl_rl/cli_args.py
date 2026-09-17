@@ -37,10 +37,16 @@ def add_rsl_rl_args(parser: argparse.ArgumentParser):
                            help="Disable automatic GetUp curriculum and easier-pose replay.")
     arg_group.add_argument("--getup_tilt_range", type=float, nargs=2, default=None, metavar=("MIN_DEG", "MAX_DEG"),
                            help="Override the selected stage's tilt range in degrees (e.g. 15 25).")
+    arg_group.add_argument("--pose_bank", type=str, default=None,
+                           help="Settled random-joint pose bank for the Fallen recovery task.")
 
 
 def configure_getup(env_cfg, args_cli):
     """Apply explicit task overrides before creating the simulation."""
+    if args_cli.pose_bank is not None:
+        if not hasattr(env_cfg, "fallen"):
+            raise ValueError("--pose_bank requires a Fallen recovery task")
+        env_cfg.fallen.bank_path = args_cli.pose_bank
     if not hasattr(env_cfg, "getup"):
         if args_cli.getup_stage is not None or args_cli.getup_fixed_stage or args_cli.getup_tilt_range is not None:
             raise ValueError("--getup_stage/--getup_fixed_stage require a GetUp task.")

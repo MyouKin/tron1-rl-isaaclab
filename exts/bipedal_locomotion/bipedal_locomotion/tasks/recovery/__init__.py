@@ -57,3 +57,17 @@ for task_id, env_cfg in (
         disable_env_checker=True,
         kwargs={"env_cfg_entry_point": env_cfg, "rsl_rl_cfg_entry_point": WF_TRON1AGetUpBoundedPPORunnerCfg},
     )
+
+from .fallen_pose_env_cfg import (
+    WFFallenPoseGenerationEnvCfg, WFFallenRecoveryEnvCfg, WFFallenRecoveryEnvCfg_PLAY,
+)
+from .agents.rsl_rl_ppo_cfg import WF_TRON1AFallenPPORunnerCfg
+
+for task_id, env_cfg in (
+    ('Isaac-Limx-WF-FallenPose-Generate-v0', WFFallenPoseGenerationEnvCfg),
+    ('Isaac-Limx-WF-Recovery-Fallen-v0', WFFallenRecoveryEnvCfg),
+    ('Isaac-Limx-WF-Recovery-Fallen-Play-v0', WFFallenRecoveryEnvCfg_PLAY),
+):
+    gym.register(id=task_id, entry_point='isaaclab.envs:ManagerBasedRLEnv',
+                 disable_env_checker=True,
+                 kwargs={'env_cfg_entry_point': env_cfg, 'rsl_rl_cfg_entry_point': WF_TRON1AFallenPPORunnerCfg})
